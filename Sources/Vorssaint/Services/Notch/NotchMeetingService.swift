@@ -75,12 +75,14 @@ final class NotchMeetingService: ObservableObject {
     }
 
     /// The recorder writes the m4a until it stops, so its modification time is the stop time,
-    /// even for a meeting recorded while Vorssaint was not running.
+    /// even for a meeting recorded while Vorssaint was not running. Without a known recording,
+    /// any recent m4a still missing its .md counts, not just the newest one.
     private func isTranscribing(now: Date) -> Bool {
-        guard let file = audio ?? newestAudio(),
-              !FileManager.default.fileExists(atPath: file.deletingPathExtension().appendingPathExtension("md").path),
-              let stopped = Self.modified(file) else { return false }
-        return now.timeIntervalSince(stopped) <= Self.transcribeTimeout
+        (audio.map { [$0] } ?? folderAudio()).contains { file in
+            guard !FileManager.default.fileExists(atPath: file.deletingPathExtension().appendingPathExtension("md").path),
+                  let stopped = Self.modified(file) else { return false }
+            return now.timeIntervalSince(stopped) <= Self.transcribeTimeout
+        }
     }
 
     private func readRecording() -> (started: Date, audio: URL)? {
@@ -106,13 +108,10 @@ final class NotchMeetingService: ObservableObject {
         try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 
-    private func newestAudio() -> URL? {
+    private func folderAudio() -> [URL] {
         let files = (try? FileManager.default.contentsOfDirectory(at: meetingFolder,
                                                                   includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-        return files
-            .filter { $0.pathExtension.lowercased() == "m4a" }
-            .compactMap { url in Self.modified(url).map { (url, $0) } }
-            .max { $0.1 < $1.1 }?.0
+        return files.filter { $0.pathExtension.lowercased() == "m4a" }
     }
 
     /// The permanent `meeting-rec watch` listener runs between meetings too and is no recording.
