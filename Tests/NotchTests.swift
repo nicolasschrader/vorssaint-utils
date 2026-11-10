@@ -1802,6 +1802,7 @@ enum NotchTests {
         NotchSliderEditingTests.run(suite)
         NotchFileToolsTests.run(suite)
         NotchAudioLevelTests.run { suite.expect($0, $1) }
+        NotchMeetingTests.run(suite)
         calendarContracts(suite)
         NotchNotificationTests.run(suite)
         NotchNotificationReaderTests.run(suite)
