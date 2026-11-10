@@ -28,7 +28,6 @@ final class NotchMeetingService: ObservableObject {
     private let recorderRunning: () -> Bool
     private var started: Date?
     private var audio: URL?
-    private var stoppedAt: Date?
     private var timer: Timer?
 
     // shortcut: Voz's extension data folder is assumed, not read from Voz; upgrade if Voz documents it.
@@ -59,31 +58,36 @@ final class NotchMeetingService: ObservableObject {
     func refresh(now: Date = Date()) {
         let record = readRecording()
         if record != nil || recorderRunning() {
-            if stoppedAt != nil { started = nil; audio = nil; stoppedAt = nil }
+            if started == nil { audio = nil }
             let begin = record?.started ?? started ?? now
             started = begin
             audio = record?.audio ?? audio
             state = .recording(started: begin)
             return
         }
-        guard let begin = started else { state = .idle; return }
-        let stop = stoppedAt ?? now
-        stoppedAt = stop
-        audio = audio ?? newestAudio(since: begin)
-        let transcribed = audio.map {
-            FileManager.default.fileExists(atPath: $0.deletingPathExtension().appendingPathExtension("md").path)
-        } ?? false
-        if transcribed || now.timeIntervalSince(stop) > Self.transcribeTimeout {
-            started = nil; audio = nil; stoppedAt = nil
-            state = .idle
-        } else {
+        started = nil
+        if isTranscribing(now: now) {
             state = .transcribing
+        } else {
+            audio = nil
+            state = .idle
         }
     }
 
-    private func readRecording() -> (started: Date?, audio: URL?)? {
+    /// The recorder writes the m4a until it stops, so its modification time is the stop time,
+    /// even for a meeting recorded while Vorssaint was not running.
+    private func isTranscribing(now: Date) -> Bool {
+        guard let file = audio ?? newestAudio(),
+              !FileManager.default.fileExists(atPath: file.deletingPathExtension().appendingPathExtension("md").path),
+              let stopped = Self.modified(file) else { return false }
+        return now.timeIntervalSince(stopped) <= Self.transcribeTimeout
+    }
+
+    private func readRecording() -> (started: Date, audio: URL)? {
         guard let data = try? Data(contentsOf: stateFile),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["pid"] is NSNumber, json["name"] is String,
+              let path = json["audio"] as? String else { return nil }
         let date: Date?
         switch json["started"] {
         case let seconds as Double: date = Date(timeIntervalSince1970: seconds > 1e11 ? seconds / 1000 : seconds)
@@ -93,20 +97,21 @@ final class NotchMeetingService: ObservableObject {
             date = iso.date(from: text) ?? ISO8601DateFormatter().date(from: text)
         default: date = nil
         }
-        let path = (json["audio"] as? String).map { ($0 as NSString).expandingTildeInPath }
-        return (date, path.map { URL(fileURLWithPath: $0, relativeTo: meetingFolder).absoluteURL })
+        guard let date else { return nil }
+        let expanded = (path as NSString).expandingTildeInPath
+        return (date, URL(fileURLWithPath: expanded, relativeTo: meetingFolder).absoluteURL)
     }
 
-    private func newestAudio(since begin: Date) -> URL? {
+    private static func modified(_ url: URL) -> Date? {
+        try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }
+
+    private func newestAudio() -> URL? {
         let files = (try? FileManager.default.contentsOfDirectory(at: meetingFolder,
                                                                   includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
         return files
             .filter { $0.pathExtension.lowercased() == "m4a" }
-            .compactMap { url in
-                (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
-                    .map { (url, $0) }
-            }
-            .filter { $0.1 >= begin.addingTimeInterval(-5) }
+            .compactMap { url in Self.modified(url).map { (url, $0) } }
             .max { $0.1 < $1.1 }?.0
     }
 

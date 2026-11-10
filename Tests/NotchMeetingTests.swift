@@ -28,8 +28,19 @@ enum NotchMeetingTests {
         let service = NotchMeetingService(stateFile: stateFile, meetingFolder: folder) { processRunning }
         let now = Date(timeIntervalSince1970: 1_800_000_000)
 
+        // The recorder's last write to the m4a marks the stop.
+        func recorded(_ name: String, stoppedAt date: Date) {
+            let url = folder.appendingPathComponent(name)
+            try? Data().write(to: url)
+            try? FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
+        }
+
         service.refresh(now: now)
         suite.expect(service.state == .idle, "no state file and no recorder is idle")
+
+        try? "{}".write(to: stateFile, atomically: true, encoding: .utf8)
+        service.refresh(now: now)
+        suite.expect(service.state == .idle, "a state file without pid, name, audio and started is no recording")
 
         try? #"{"pid":42,"name":"Standup","audio":"Standup.m4a","started":"2027-01-15T08:00:00Z"}"#
             .write(to: stateFile, atomically: true, encoding: .utf8)
@@ -37,20 +48,30 @@ enum NotchMeetingTests {
         suite.expect(service.state == .recording(started: ISO8601DateFormatter().date(from: "2027-01-15T08:00:00Z")!),
                      "the state file's start time drives the recording timer")
 
+        recorded("Standup.m4a", stoppedAt: now)
         try? FileManager.default.removeItem(at: stateFile)
-        service.refresh(now: now)
+        service.refresh(now: now.addingTimeInterval(10))
         suite.expect(service.state == .transcribing, "after the stop, a recording without its .md is transcribing")
         try? Data().write(to: folder.appendingPathComponent("Standup.md"))
         service.refresh(now: now.addingTimeInterval(60))
         suite.expect(service.state == .idle, "the .md next to the recording ends transcribing")
 
         processRunning = true
-        service.refresh(now: now)
-        suite.expect(service.state == .recording(started: now), "a recorder process alone starts a recording now")
+        service.refresh(now: now.addingTimeInterval(100))
+        suite.expect(service.state == .recording(started: now.addingTimeInterval(100)),
+                     "a recorder process alone starts a recording now")
+        recorded("Sync.m4a", stoppedAt: now.addingTimeInterval(200))
         processRunning = false
-        service.refresh(now: now.addingTimeInterval(1))
+        service.refresh(now: now.addingTimeInterval(201))
         suite.expect(service.state == .transcribing, "a process-only recording waits for transcription too")
-        service.refresh(now: now.addingTimeInterval(1 + NotchMeetingService.transcribeTimeout + 1))
+        service.refresh(now: now.addingTimeInterval(200 + NotchMeetingService.transcribeTimeout + 1))
         suite.expect(service.state == .idle, "a transcript that never comes stops claiming transcribing")
+
+        let late = NotchMeetingService(stateFile: stateFile, meetingFolder: folder) { false }
+        recorded("Offline.m4a", stoppedAt: now.addingTimeInterval(10_000))
+        late.refresh(now: now.addingTimeInterval(10_000 + 60))
+        suite.expect(late.state == .transcribing, "a meeting recorded before the first refresh is still transcribing")
+        late.refresh(now: now.addingTimeInterval(10_000 + NotchMeetingService.transcribeTimeout + 1))
+        suite.expect(late.state == .idle, "the timeout runs from the recording's stop, not from the first refresh")
     }
 }
