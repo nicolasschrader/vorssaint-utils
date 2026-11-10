@@ -81,5 +81,17 @@ enum NotchMeetingTests {
         behind.refresh(now: now.addingTimeInterval(20_060))
         suite.expect(behind.state == .idle,
                      "an older recording without its .md does not hold transcribing once the last meeting has its .md")
+
+        let next = NotchMeetingService(stateFile: stateFile, meetingFolder: folder) { nil }
+        try? #"{"pid":43,"name":"Retro","audio":"Retro.m4a","started":"2027-01-15T09:00:00Z"}"#
+            .write(to: stateFile, atomically: true, encoding: .utf8)
+        next.refresh(now: now.addingTimeInterval(30_000))
+        try? FileManager.default.removeItem(at: stateFile)
+        recorded("Retro.m4a", stoppedAt: now.addingTimeInterval(30_000))
+        try? Data().write(to: folder.appendingPathComponent("Retro.md"))
+        recorded("Planning.m4a", stoppedAt: now.addingTimeInterval(30_100))
+        next.refresh(now: now.addingTimeInterval(30_120))
+        suite.expect(next.state == .transcribing,
+                     "a later meeting without its .md is transcribing even when an earlier remembered one has its .md")
     }
 }

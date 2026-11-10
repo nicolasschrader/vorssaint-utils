@@ -74,10 +74,11 @@ final class NotchMeetingService: ObservableObject {
     }
 
     /// The recorder writes the m4a until it stops, so its modification time is the stop time,
-    /// even for a meeting recorded while Vorssaint was not running. Without a known recording,
-    /// the newest m4a is the meeting that stopped last; older ones without a .md are not it.
+    /// even for a meeting recorded while Vorssaint was not running. The newest m4a, the remembered one
+    /// included since it may lie outside the folder, is the meeting that stopped last; older ones are not it.
     private func isTranscribing(now: Date) -> Bool {
-        guard let file = audio ?? folderAudio().max(by: { (Self.modified($0) ?? .distantPast) < (Self.modified($1) ?? .distantPast) }),
+        guard let file = (folderAudio() + [audio].compactMap { $0 })
+                .max(by: { (Self.modified($0) ?? .distantPast) < (Self.modified($1) ?? .distantPast) }),
               !FileManager.default.fileExists(atPath: file.deletingPathExtension().appendingPathExtension("md").path),
               let stopped = Self.modified(file) else { return false }
         return now.timeIntervalSince(stopped) <= Self.transcribeTimeout
