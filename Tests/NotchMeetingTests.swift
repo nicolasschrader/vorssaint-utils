@@ -24,9 +24,9 @@ enum NotchMeetingTests {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let stateFile = root.appendingPathComponent("recording.json")
-        var processRunning = false
-        let service = NotchMeetingService(stateFile: stateFile, meetingFolder: folder) { processRunning }
         let now = Date(timeIntervalSince1970: 1_800_000_000)
+        var processStarted: Date?
+        let service = NotchMeetingService(stateFile: stateFile, meetingFolder: folder) { processStarted }
 
         // The recorder's last write to the m4a marks the stop.
         func recorded(_ name: String, stoppedAt date: Date) {
@@ -56,30 +56,42 @@ enum NotchMeetingTests {
         service.refresh(now: now.addingTimeInterval(60))
         suite.expect(service.state == .idle, "the .md next to the recording ends transcribing")
 
-        processRunning = true
-        service.refresh(now: now.addingTimeInterval(100))
+        processStarted = now.addingTimeInterval(100)
+        service.refresh(now: now.addingTimeInterval(220))
         suite.expect(service.state == .recording(started: now.addingTimeInterval(100)),
-                     "a recorder process alone starts a recording now")
-        recorded("Sync.m4a", stoppedAt: now.addingTimeInterval(200))
-        processRunning = false
-        service.refresh(now: now.addingTimeInterval(201))
+                     "a recorder process first seen two minutes in times from the process start, not from the check")
+        recorded("Sync.m4a", stoppedAt: now.addingTimeInterval(300))
+        processStarted = nil
+        service.refresh(now: now.addingTimeInterval(301))
         suite.expect(service.state == .transcribing, "a process-only recording waits for transcription too")
-        service.refresh(now: now.addingTimeInterval(200 + NotchMeetingService.transcribeTimeout + 1))
+        service.refresh(now: now.addingTimeInterval(300 + NotchMeetingService.transcribeTimeout + 1))
         suite.expect(service.state == .idle, "a transcript that never comes stops claiming transcribing")
 
-        let late = NotchMeetingService(stateFile: stateFile, meetingFolder: folder) { false }
+        let late = NotchMeetingService(stateFile: stateFile, meetingFolder: folder) { nil }
         recorded("Offline.m4a", stoppedAt: now.addingTimeInterval(10_000))
         late.refresh(now: now.addingTimeInterval(10_000 + 60))
         suite.expect(late.state == .transcribing, "a meeting recorded before the first refresh is still transcribing")
         late.refresh(now: now.addingTimeInterval(10_000 + NotchMeetingService.transcribeTimeout + 1))
         suite.expect(late.state == .idle, "the timeout runs from the recording's stop, not from the first refresh")
 
-        let behind = NotchMeetingService(stateFile: stateFile, meetingFolder: folder) { false }
+        let behind = NotchMeetingService(stateFile: stateFile, meetingFolder: folder) { nil }
         recorded("Earlier.m4a", stoppedAt: now.addingTimeInterval(20_000))
         recorded("Later.m4a", stoppedAt: now.addingTimeInterval(20_030))
         try? Data().write(to: folder.appendingPathComponent("Later.md"))
         behind.refresh(now: now.addingTimeInterval(20_060))
-        suite.expect(behind.state == .transcribing,
-                     "an older recording without its .md is transcribing behind a newer transcribed one")
+        suite.expect(behind.state == .idle,
+                     "an older recording without its .md does not hold transcribing once the last meeting has its .md")
+
+        let next = NotchMeetingService(stateFile: stateFile, meetingFolder: folder) { nil }
+        try? #"{"pid":43,"name":"Retro","audio":"Retro.m4a","started":"2027-01-15T09:00:00Z"}"#
+            .write(to: stateFile, atomically: true, encoding: .utf8)
+        next.refresh(now: now.addingTimeInterval(30_000))
+        try? FileManager.default.removeItem(at: stateFile)
+        recorded("Retro.m4a", stoppedAt: now.addingTimeInterval(30_000))
+        try? Data().write(to: folder.appendingPathComponent("Retro.md"))
+        recorded("Planning.m4a", stoppedAt: now.addingTimeInterval(30_100))
+        next.refresh(now: now.addingTimeInterval(30_120))
+        suite.expect(next.state == .transcribing,
+                     "a later meeting without its .md is transcribing even when an earlier remembered one has its .md")
     }
 }

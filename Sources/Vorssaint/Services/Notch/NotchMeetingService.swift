@@ -25,7 +25,7 @@ final class NotchMeetingService: ObservableObject {
 
     private let stateFile: URL
     private let meetingFolder: URL
-    private let recorderRunning: () -> Bool
+    private let recorderStarted: () -> Date?
     private var started: Date?
     private var audio: URL?
     private var timer: Timer?
@@ -38,10 +38,10 @@ final class NotchMeetingService: ObservableObject {
 
     init(stateFile: URL = NotchMeetingService.defaultStateFile,
          meetingFolder: URL = NotchMeetingService.defaultMeetingFolder,
-         recorderRunning: @escaping () -> Bool = NotchMeetingService.isRecorderRunning) {
+         recorderStarted: @escaping () -> Date? = NotchMeetingService.recorderStartTime) {
         self.stateFile = stateFile
         self.meetingFolder = meetingFolder
-        self.recorderRunning = recorderRunning
+        self.recorderStarted = recorderStarted
     }
 
     func start() {
@@ -57,9 +57,8 @@ final class NotchMeetingService: ObservableObject {
 
     func refresh(now: Date = Date()) {
         let record = readRecording()
-        if record != nil || recorderRunning() {
+        if let begin = record?.started ?? recorderStarted() {
             if started == nil { audio = nil }
-            let begin = record?.started ?? started ?? now
             started = begin
             audio = record?.audio ?? audio
             state = .recording(started: begin)
@@ -75,14 +74,14 @@ final class NotchMeetingService: ObservableObject {
     }
 
     /// The recorder writes the m4a until it stops, so its modification time is the stop time,
-    /// even for a meeting recorded while Vorssaint was not running. Without a known recording,
-    /// any recent m4a still missing its .md counts, not just the newest one.
+    /// even for a meeting recorded while Vorssaint was not running. The newest m4a, the remembered one
+    /// included since it may lie outside the folder, is the meeting that stopped last; older ones are not it.
     private func isTranscribing(now: Date) -> Bool {
-        (audio.map { [$0] } ?? folderAudio()).contains { file in
-            guard !FileManager.default.fileExists(atPath: file.deletingPathExtension().appendingPathExtension("md").path),
-                  let stopped = Self.modified(file) else { return false }
-            return now.timeIntervalSince(stopped) <= Self.transcribeTimeout
-        }
+        guard let file = (folderAudio() + [audio].compactMap { $0 })
+                .max(by: { (Self.modified($0) ?? .distantPast) < (Self.modified($1) ?? .distantPast) }),
+              !FileManager.default.fileExists(atPath: file.deletingPathExtension().appendingPathExtension("md").path),
+              let stopped = Self.modified(file) else { return false }
+        return now.timeIntervalSince(stopped) <= Self.transcribeTimeout
     }
 
     private func readRecording() -> (started: Date, audio: URL)? {
@@ -128,11 +127,12 @@ final class NotchMeetingService: ObservableObject {
             .map { String(decoding: $0, as: UTF8.self) }
     }
 
-    static func isRecorderRunning() -> Bool {
+    /// The start of a running meeting-rec recording, so a first check after it began still shows the real duration.
+    static func recorderStartTime() -> Date? {
         let estimated = max(1, Int(proc_listallpids(nil, 0)))
         var pids = [pid_t](repeating: 0, count: estimated + 32)
         let count = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
-        guard count > 0 else { return false }
+        guard count > 0 else { return nil }
         var name = [CChar](repeating: 0, count: 256)
         for pid in pids.prefix(Int(count)) where pid > 0 {
             // shortcut: matches a native meeting-rec binary only; a script under node/python would show its interpreter's name.
@@ -142,8 +142,12 @@ final class NotchMeetingService: ObservableObject {
             guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { continue }
             var buffer = [UInt8](repeating: 0, count: size)
             guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { continue }
-            if isRecording(arguments: arguments(procArgs: Array(buffer.prefix(size)))) { return true }
+            guard isRecording(arguments: arguments(procArgs: Array(buffer.prefix(size)))) else { continue }
+            var info = proc_bsdinfo()
+            let infoSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, infoSize) == infoSize else { continue }
+            return Date(timeIntervalSince1970: TimeInterval(info.pbi_start_tvsec) + TimeInterval(info.pbi_start_tvusec) / 1_000_000)
         }
-        return false
+        return nil
     }
 }
