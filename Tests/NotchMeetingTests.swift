@@ -67,14 +67,14 @@ enum NotchMeetingTests {
         service.refresh(now: now.addingTimeInterval(300 + NotchMeetingService.transcribeTimeout + 1))
         suite.expect(service.state == .idle, "a transcript that never comes stops claiming transcribing")
 
-        let late = NotchMeetingService(stateFile: stateFile, meetingFolder: folder) { false }
+        let late = NotchMeetingService(stateFile: stateFile, meetingFolder: folder) { nil }
         recorded("Offline.m4a", stoppedAt: now.addingTimeInterval(10_000))
         late.refresh(now: now.addingTimeInterval(10_000 + 60))
         suite.expect(late.state == .transcribing, "a meeting recorded before the first refresh is still transcribing")
         late.refresh(now: now.addingTimeInterval(10_000 + NotchMeetingService.transcribeTimeout + 1))
         suite.expect(late.state == .idle, "the timeout runs from the recording's stop, not from the first refresh")
 
-        let behind = NotchMeetingService(stateFile: stateFile, meetingFolder: folder) { false }
+        let behind = NotchMeetingService(stateFile: stateFile, meetingFolder: folder) { nil }
         recorded("Earlier.m4a", stoppedAt: now.addingTimeInterval(20_000))
         recorded("Later.m4a", stoppedAt: now.addingTimeInterval(20_030))
         try? Data().write(to: folder.appendingPathComponent("Later.md"))
